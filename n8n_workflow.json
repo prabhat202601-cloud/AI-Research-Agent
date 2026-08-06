@@ -1,0 +1,86 @@
+{
+  "name": "AI Research Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "topic",
+              "value": "AI automation trends India 2025"
+            },
+            {
+              "name": "num_results",
+              "value": "6"
+            }
+          ]
+        }
+      },
+      "name": "Set Topic",
+      "type": "n8n-nodes-base.set",
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5000/research",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "topic",
+              "value": "={{ $json.topic }}"
+            },
+            {
+              "name": "num_results",
+              "value": "={{ $json.num_results }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "name": "Call Research Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "your-email@gmail.com",
+        "subject": "=🔍 Research Report: {{ $json.topic }}",
+        "message": "={{ $json.report }}",
+        "options": {}
+      },
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{"node": "Set Topic", "type": "main", "index": 0}]]
+    },
+    "Set Topic": {
+      "main": [[{"node": "Call Research Agent", "type": "main", "index": 0}]]
+    },
+    "Call Research Agent": {
+      "main": [[{"node": "Send Gmail", "type": "main", "index": 0}]]
+    }
+  }
+}

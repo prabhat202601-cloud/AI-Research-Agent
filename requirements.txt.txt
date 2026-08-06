@@ -1,0 +1,5 @@
+anthropic
+duckduckgo-search
+beautifulsoup4
+requests
+flask
