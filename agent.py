@@ -1,0 +1,251 @@
+"""
+AI Research Agent
+-----------------
+Searches the web using DuckDuckGo, scrapes article content,
+sends it to Claude API for summarisation, and returns a
+formatted markdown report.
+
+Usage:
+    python agent.py --topic "AI in healthcare India 2025"
+    python agent.py --topic "your topic" --results 5
+"""
+
+import argparse
+import requests
+import time
+import os
+from datetime import datetime
+from bs4 import BeautifulSoup
+from ddgs import DDGS
+import anthropic
+
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+CLAUDE_API_KEY     = os.environ.get("ANTHROPIC_API_KEY", "your claude api key here")
+MAX_CHARS_PER_PAGE = 3000
+REQUEST_TIMEOUT    = 10
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── STEP 1: SEARCH ────────────────────────────────────────────────────────────
+def search_web(topic: str, num_results: int = 6) -> list[dict]:
+    """Search DuckDuckGo and return a list of results."""
+    print(f"\n🔍 Searching the web for: '{topic}'")
+    results = []
+
+    d = DDGS()
+    for r in d.text(topic, max_results=num_results):
+        results.append({
+            "title":   r.get("title", "No title"),
+            "url":     r.get("href", ""),
+            "snippet": r.get("body", "")
+        })
+
+    print(f"   Found {len(results)} results")
+    return results
+
+
+# ── STEP 2: SCRAPE ────────────────────────────────────────────────────────────
+def scrape_page(url: str) -> str:
+    """Visit a URL and extract clean readable text."""
+    try:
+        headers  = {"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)"}
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for tag in soup(["script", "style", "nav", "footer",
+                          "header", "aside", "form", "noscript"]):
+            tag.decompose()
+
+        text = soup.get_text(separator=" ", strip=True)
+
+        import re
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        return text[:MAX_CHARS_PER_PAGE]
+
+    except Exception as e:
+        return f"[Could not scrape this page: {e}]"
+
+
+def scrape_all(results: list[dict]) -> list[dict]:
+    """Scrape all search result URLs."""
+    print(f"\n📄 Scraping {len(results)} pages...")
+
+    for i, result in enumerate(results):
+        print(f"   [{i+1}/{len(results)}] {result['title'][:60]}...")
+        result["content"] = scrape_page(result["url"])
+        time.sleep(0.5)
+
+    return results
+
+
+# ── STEP 3: SUMMARISE WITH CLAUDE ─────────────────────────────────────────────
+def build_prompt(topic: str, results: list[dict]) -> str:
+    sources_text = ""
+    for i, r in enumerate(results, 1):
+        sources_text += f"""
+--- SOURCE {i} ---
+Title:   {r['title']}
+URL:     {r['url']}
+Snippet: {r['snippet']}
+Content: {r['content']}
+"""
+
+    prompt = f"""You are an expert research analyst. I have gathered web content about the following topic:
+
+TOPIC: {topic}
+
+Below are {len(results)} sources I collected:
+
+{sources_text}
+
+Please produce a structured research report with the following sections:
+
+1. EXECUTIVE SUMMARY
+   Write 2-3 paragraphs summarising the most important findings across all sources.
+
+2. KEY INSIGHTS (5 bullet points)
+   The 5 most important, specific, and actionable insights from the research.
+   Each bullet should be 1-2 sentences and data-rich where possible.
+
+3. TRENDS IDENTIFIED (3-4 bullets)
+   Emerging patterns or directions you noticed across sources.
+
+4. GAPS & LIMITATIONS
+   1 short paragraph on what the sources did NOT cover well or where information was thin.
+
+5. FOLLOW-UP QUESTIONS (3 questions)
+   The 3 most important questions a researcher should investigate next.
+
+Keep the tone professional and analytical. Do not fabricate statistics not present in the sources.
+"""
+    return prompt
+
+
+def summarise_with_claude(topic: str, results: list[dict]) -> str:
+    print(f"\n🤖 Sending content to Claude for analysis...")
+
+    client  = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    prompt  = build_prompt(topic, results)
+
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return message.content[0].text
+
+
+# ── STEP 4: FORMAT REPORT ─────────────────────────────────────────────────────
+def format_report(topic: str, results: list[dict], summary: str) -> str:
+    date_str = datetime.now().strftime("%d %B %Y, %I:%M %p")
+
+    sources_list = "\n".join([
+        f"{i}. [{r['title']}]({r['url']})"
+        for i, r in enumerate(results, 1)
+    ])
+
+    report = f"""# 🔍 AI Research Report
+
+**Topic:** {topic}
+**Generated:** {date_str}
+**Sources read:** {len(results)}
+
+---
+
+{summary}
+
+---
+
+## 📚 Sources
+
+{sources_list}
+
+---
+*Generated by AI Research Agent · Claude API + DuckDuckGo + Python + n8n*
+"""
+    return report
+
+
+# ── STEP 5: SAVE REPORT ───────────────────────────────────────────────────────
+def save_report(report: str, topic: str) -> str:
+    safe_topic = topic[:40].replace(" ", "_").replace("/", "-")
+    date_str   = datetime.now().strftime("%Y%m%d_%H%M")
+    filename   = f"report_{safe_topic}_{date_str}.md"
+
+    os.makedirs("reports", exist_ok=True)
+    filepath = os.path.join("reports", filename)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(report)
+
+    return filepath
+
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────
+def run_agent(topic: str, num_results: int = 6) -> str:
+    print(f"\n{'='*55}")
+    print(f"  AI Research Agent")
+    print(f"  Topic: {topic}")
+    print(f"{'='*55}")
+
+    results  = search_web(topic, num_results)
+    results  = scrape_all(results)
+    summary  = summarise_with_claude(topic, results)
+    report   = format_report(topic, results, summary)
+    filepath = save_report(report, topic)
+
+    print(f"\n✅ Done! Report saved to: {filepath}")
+    print(f"\n{'='*55}")
+    print(report[:500] + "...")
+    print(f"{'='*55}\n")
+
+    return report
+
+
+# ── n8n WEBHOOK ENDPOINT ──────────────────────────────────────────────────────
+def start_webhook_server():
+    try:
+        from flask import Flask, request, jsonify
+        app = Flask(__name__)
+
+        @app.route("/research", methods=["POST"])
+        def research():
+            data        = request.get_json()
+            topic       = data.get("topic", "").strip()
+            if not topic:
+                return jsonify({"error": "No topic provided"}), 400
+            num_results = int(data.get("num_results", 6))
+            report      = run_agent(topic, num_results)
+            return jsonify({"status": "success", "topic": topic, "report": report})
+
+        @app.route("/health", methods=["GET"])
+        def health():
+            return jsonify({"status": "running"})
+
+        print("\n🚀 Webhook server running on http://localhost:5000")
+        print("   POST to: http://localhost:5000/research")
+        print('   Body: {"topic": "your research topic"}\n')
+        app.run(host="0.0.0.0", port=5000, debug=False)
+
+    except ImportError:
+        print("Flask not installed. Run: pip install flask")
+
+
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AI Research Agent")
+    parser.add_argument("--topic",   type=str, help="Topic to research")
+    parser.add_argument("--results", type=int, default=6)
+    parser.add_argument("--server",  action="store_true")
+    args = parser.parse_args()
+
+    if args.server:
+        start_webhook_server()
+    elif args.topic:
+        run_agent(args.topic, args.results)
+    else:
+        run_agent("AI automation trends in India 2026")
